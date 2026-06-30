@@ -19,12 +19,11 @@ projeto-eventos/
 ## O que mudou em relação ao seu `main.py` original
 
 - **CORS habilitado** — sem isso o navegador bloqueia as chamadas do front (porta diferente da API).
-- **Validação com Pydantic** (`EventoCreate`, `InscricaoCreate`) em vez de query params soltos — menos erro de digitação, erros 422 claros.
+- **Validação com Pydantic** (`EventoCreate`, `InscricaoCreate`) em vez de query params soltos.
 - **Novos campos no evento**: `descricao`, `local`, `categoria`, `imagem_url`, `preco`, `criado_em`.
 - **Novos endpoints**: `GET /eventos/` (listar tudo), `GET /eventos/{id}` (detalhe), `DELETE /eventos/{id}` (remover evento), `GET /categorias`.
 - **Cascade delete**: ao apagar um evento, fila de espera e vínculos de inscrição são removidos junto (`ondelete="CASCADE"` + `cascade="all, delete-orphan"`).
 - **Bug corrigido** na busca por data (a versão original comparava `DateTime` completo com uma data sem hora, então quase nunca encontrava nada).
-- A lógica de **BST** (relatório ordenado) e **fila FIFO** (lista de espera) que você implementou foi mantida 100% — só ganhou serialização mais rica.
 
 ### Sistema de usuários (login/cadastro)
 
@@ -40,13 +39,6 @@ projeto-eventos/
   (`PUT /eventos/{id}` e `DELETE /eventos/{id}` verificam isso e retornam `403` se não for o dono).
 - Inscrição/cancelamento de participantes continuam públicos — qualquer visitante pode se
   inscrever num evento, só a gestão do evento em si é restrita ao criador.
-
-> ⚠️ **Se você já tinha rodado uma versão anterior e existe um arquivo `backend/eventos.db`,
-> apague-o antes de rodar de novo.** O SQLAlchemy só cria tabelas que ainda não existem —
-> ele não adiciona colunas novas (`criador_id`) nem tabelas novas (`usuarios`, `sessoes`)
-> a um banco que já existe com o esquema antigo. Apagando o `.db`, ele é recriado do zero
-> já com o esquema novo na próxima vez que você rodar `uvicorn main:app --reload`.
-
 ---
 
 ## 1. Rodando na sua máquina
@@ -111,65 +103,3 @@ Se o indicador no topo da página mostrar **"API conectada"** (ponto verde), est
 Se mostrar **"API offline"**, confirme que o terminal do backend ainda está rodando.
 
 ---
-
-## 2. Subindo as alterações para o GitHub com o GitHub Desktop
-
-Como o seu repositório `ZZugzwang/M-todos-` é um **fork**, o fluxo é:
-
-1. **Abra o GitHub Desktop** e clone o repositório, se ainda não tiver feito isso:
-   `File → Clone repository → ZZugzwang/M-todos-`
-
-2. **Copie os arquivos deste projeto** para dentro da pasta local do repositório clonado.
-   Por exemplo, se o GitHub Desktop clonou em `C:\Users\SeuUsuario\Documents\GitHub\M-todos-`,
-   copie as pastas `backend/` e `frontend/` (e este `README.md`) para dentro dela, ficando assim:
-
-   ```
-   M-todos-/
-   ├── 1qst.ipynb          (já existia)
-   ├── backend/
-   │   ├── main.py
-   │   └── requirements.txt
-   ├── frontend/
-   │   ├── index.html
-   │   ├── style.css
-   │   └── script.js
-   └── README.md
-   ```
-
-   > Dica: pode apagar o `main.py` antigo da raiz, já que ele foi incorporado e
-   > refinado dentro de `backend/main.py` — ou deixá-lo como histórico, fica a seu critério.
-
-3. **Volte ao GitHub Desktop.** Ele vai detectar automaticamente todos os arquivos novos/alterados
-   na aba **"Changes"** (lado esquerdo), mostrando um diff de cada arquivo.
-
-4. **Adicione um `.gitignore`** (se ainda não existir) para não subir o ambiente virtual nem o banco de dados:
-
-   Crie um arquivo `.gitignore` na raiz do repositório com:
-   ```
-   venv/
-   __pycache__/
-   *.pyc
-   backend/eventos.db
-   ```
-
-5. **Escreva uma mensagem de commit** no campo inferior esquerdo, por exemplo:
-   `"Adiciona front-end e refina API de gerenciamento de eventos"`
-
-6. Clique em **"Commit to main"**.
-
-7. Clique em **"Push origin"** no topo da janela para enviar as alterações para o seu fork no GitHub.
-
-8. Pronto — confira em `https://github.com/ZZugzwang/M-todos-` se os arquivos apareceram.
-
-> Se quiser eventualmente contribuir de volta para o repositório original
-> (`hungryteam-43/M-todos-`), o GitHub Desktop também tem o botão **"Branch → Create Pull Request"**,
-> mas isso só faz sentido se for combinado com o dono do repositório original.
-
----
-
-## 3. Possíveis ajustes futuros
-
-- Trocar SQLite por PostgreSQL quando for hospedar de verdade (troque só a `DATABASE_URL`).
-- Autenticação simples para a criação/exclusão de eventos (hoje qualquer pessoa que acessa o front pode criar/excluir).
-- Upload de imagem em vez de URL.
-- Paginação na listagem se o número de eventos crescer muito.

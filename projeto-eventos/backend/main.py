@@ -1,6 +1,4 @@
 """
-Sistema de Gerenciamento de Eventos (Shows) — API
-Refinado a partir do projeto original de Métodos Computacionais (IF264).
 
 Conceitos de estruturas de dados mantidos e expandidos:
 - BST (Árvore Binária de Busca) para relatório ordenado em memória
