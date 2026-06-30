@@ -108,15 +108,24 @@
 
         <p class="ticket__creator">Criado por <strong id="modalCriador">—</strong></p>
 
-        <form class="inscricao-form" id="inscricaoForm">
-          <input type="text" id="inscricaoNome" placeholder="Seu nome" required>
-          <input type="email" id="inscricaoEmail" placeholder="Seu e-mail (opcional)">
-          <button type="submit" class="btn btn--primary" id="btnInscrever">Inscrever-se</button>
-        </form>
+        <div class="inscricao-area" id="inscricaoArea">
+          <!-- Estado: visitante não logado -->
+          <div class="inscricao-state" id="stateNaoLogado" hidden>
+            <p class="inscricao-hint">Você precisa estar logado para se inscrever.</p>
+            <button type="button" class="btn btn--primary btn--full" id="btnLoginParaInscrever">Entrar / Criar conta</button>
+          </div>
 
-        <div class="cancel-row">
-          <input type="text" id="cancelarNome" placeholder="Nome p/ cancelar inscrição">
-          <button class="btn btn--danger" id="btnCancelar">Cancelar inscrição</button>
+          <!-- Estado: logado e ainda não inscrito -->
+          <form class="inscricao-form" id="inscricaoForm" hidden>
+            <input type="email" id="inscricaoEmail" placeholder="Seu e-mail (opcional)">
+            <button type="submit" class="btn btn--primary" id="btnInscrever">Inscrever-se</button>
+          </form>
+
+          <!-- Estado: logado e já inscrito -->
+          <div class="inscricao-state" id="stateInscrito" hidden>
+            <p class="inscricao-hint">Você está inscrito neste evento ✓</p>
+            <button type="button" class="btn btn--danger btn--full" id="btnCancelar">Cancelar minha inscrição</button>
+          </div>
         </div>
 
         <p class="form-feedback" id="formFeedback"></p>

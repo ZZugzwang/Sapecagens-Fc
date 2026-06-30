@@ -18,6 +18,9 @@ const listTitle = $("#listTitle");
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
+function getUsername() {
+  return localStorage.getItem(USERNAME_KEY);
+}
 function setSession(token, username) {
   localStorage.setItem(TOKEN_KEY, token);
   localStorage.setItem(USERNAME_KEY, username);
@@ -88,6 +91,7 @@ async function handleAuthSubmit(e) {
     setSession(data.token, data.username);
     closeAuthModal();
     await loadEvents();
+    if (currentEventId) await refreshEventModal(currentEventId);
   } catch (err) {
     showFeedback("#authFeedback", err.message, false);
   }
@@ -101,6 +105,7 @@ async function handleLogout() {
   }
   clearSession();
   await loadEvents();
+  if (currentEventId) await refreshEventModal(currentEventId);
 }
 
 // ---------- API status ----------
@@ -220,6 +225,46 @@ async function loadEvents() {
 }
 
 // ---------- Event modal ----------
+function applyInscricaoState(ev) {
+  const logado = !!getToken();
+  const inscrito = !!ev.inscrito_atual;
+
+  $("#stateNaoLogado").hidden = logado;
+  $("#inscricaoForm").hidden = !(logado && !inscrito);
+  $("#stateInscrito").hidden = !(logado && inscrito);
+
+  if (logado && !inscrito) {
+    $("#btnInscrever").textContent = `Inscrever-se como ${getUsername()}`;
+  }
+}
+
+// Atualiza só as partes do modal que mudam com inscrição/cancelamento
+// (capacidade, fila, estado de inscrição) sem mexer no campo de feedback,
+// para a mensagem de sucesso/aviso continuar visível por mais tempo.
+function updateModalDynamic(ev) {
+  const pct = ev.lotacao_maxima > 0 ? Math.min(100, (ev.vagas_ocupadas / ev.lotacao_maxima) * 100) : 0;
+  $("#modalCapacityFill").style.width = `${pct}%`;
+  $("#modalCapacityLabel").textContent = `${ev.vagas_ocupadas}/${ev.lotacao_maxima} vagas ocupadas`;
+
+  const queueBadge = $("#modalQueueBadge");
+  if (ev.fila_espera.length > 0) {
+    queueBadge.hidden = false;
+    $("#modalQueueCount").textContent = ev.fila_espera.length;
+  } else {
+    queueBadge.hidden = true;
+  }
+
+  applyInscricaoState(ev);
+}
+
+async function refreshEventModal(id) {
+  const res = await fetch(`${API_BASE}/eventos/${id}`, { headers: authHeaders() });
+  if (!res.ok) return null;
+  const ev = await res.json();
+  updateModalDynamic(ev);
+  return ev;
+}
+
 async function openEventModal(id) {
   const res = await fetch(`${API_BASE}/eventos/${id}`, { headers: authHeaders() });
   if (!res.ok) return;
@@ -235,26 +280,15 @@ async function openEventModal(id) {
   $("#modalId").textContent = `#${String(ev.id).padStart(3, "0")}`;
   $("#modalCriador").textContent = ev.criador || "desconhecido";
 
-  const pct = ev.lotacao_maxima > 0 ? Math.min(100, (ev.vagas_ocupadas / ev.lotacao_maxima) * 100) : 0;
-  $("#modalCapacityFill").style.width = `${pct}%`;
-  $("#modalCapacityLabel").textContent = `${ev.vagas_ocupadas}/${ev.lotacao_maxima} vagas ocupadas`;
-
-  const queueBadge = $("#modalQueueBadge");
-  if (ev.fila_espera.length > 0) {
-    queueBadge.hidden = false;
-    $("#modalQueueCount").textContent = ev.fila_espera.length;
-  } else {
-    queueBadge.hidden = true;
-  }
+  updateModalDynamic(ev);
 
   // Só quem criou o evento vê os botões de editar/excluir
   $("#ownerActions").hidden = !ev.pode_editar;
   $("#btnEditarEvento").onclick = () => openEditModal(ev);
 
+  if (feedbackTimeoutId) clearTimeout(feedbackTimeoutId);
   $("#formFeedback").textContent = "";
-  $("#inscricaoNome").value = "";
   $("#inscricaoEmail").value = "";
-  $("#cancelarNome").value = "";
 
   $("#eventModalBackdrop").hidden = false;
 }
@@ -264,52 +298,70 @@ function closeEventModal() {
   currentEventId = null;
 }
 
+let feedbackTimeoutId = null;
 function showFeedback(elId, message, ok) {
   const el = $(elId);
   el.textContent = message;
   el.className = "form-feedback " + (ok ? "ok" : "err");
 }
+// Mesma coisa, mas a mensagem fica mais tempo na tela antes de sumir —
+// usada nos fluxos de inscrição/cancelamento, que antes apagavam a
+// mensagem quase instantaneamente.
+function showFeedbackTimed(elId, message, ok, duration = 4500) {
+  showFeedback(elId, message, ok);
+  if (feedbackTimeoutId) clearTimeout(feedbackTimeoutId);
+  feedbackTimeoutId = setTimeout(() => {
+    const el = $(elId);
+    if (el) el.textContent = "";
+  }, duration);
+}
 
 // ---------- Inscrição ----------
 async function handleInscricao(e) {
   e.preventDefault();
-  const nome = $("#inscricaoNome").value.trim();
+
+  if (!getToken()) {
+    openAuthModal("login");
+    return;
+  }
+
   const email = $("#inscricaoEmail").value.trim();
-  if (!nome) return;
 
   try {
     const res = await fetch(`${API_BASE}/eventos/${currentEventId}/inscrever`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ nome_participante: nome, email }),
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ email }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Erro ao inscrever");
-    showFeedback("#formFeedback", data.mensagem, true);
     await loadEvents();
-    await openEventModal(currentEventId);
+    await refreshEventModal(currentEventId);
+    showFeedbackTimed("#formFeedback", data.mensagem, true);
   } catch (err) {
-    showFeedback("#formFeedback", err.message, false);
+    showFeedbackTimed("#formFeedback", err.message, false);
   }
 }
 
 // ---------- Cancelamento ----------
 async function handleCancelar() {
-  const nome = $("#cancelarNome").value.trim();
-  if (!nome) return;
+  if (!getToken()) {
+    openAuthModal("login");
+    return;
+  }
 
   try {
-    const res = await fetch(
-      `${API_BASE}/eventos/${currentEventId}/cancelar?nome_participante=${encodeURIComponent(nome)}`,
-      { method: "DELETE" }
-    );
+    const res = await fetch(`${API_BASE}/eventos/${currentEventId}/cancelar`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Erro ao cancelar");
-    showFeedback("#formFeedback", data.mensagem, true);
     await loadEvents();
-    await openEventModal(currentEventId);
+    await refreshEventModal(currentEventId);
+    showFeedbackTimed("#formFeedback", data.mensagem, true);
   } catch (err) {
-    showFeedback("#formFeedback", err.message, false);
+    showFeedbackTimed("#formFeedback", err.message, false);
   }
 }
 
@@ -480,6 +532,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#inscricaoForm").onsubmit = handleInscricao;
   $("#btnCancelar").onclick = handleCancelar;
+  $("#btnLoginParaInscrever").onclick = () => openAuthModal("login");
   $("#btnExcluirEvento").onclick = handleExcluirEvento;
   $("#createForm").onsubmit = handleCreateEvent;
 

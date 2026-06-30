@@ -95,6 +95,9 @@ class ParticipanteDB(Base):
     id = Column(Integer, primary_key=True, index=True)
     nome = Column(String, unique=True, nullable=False)
     email = Column(String, default="")
+    # Liga o participante à conta que fez a inscrição. É o que garante que
+    # só o dono da inscrição consiga cancelá-la (ver rotas /inscrever e /cancelar).
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
 
     eventos = relationship(
         "EventoDB", secondary=inscricoes_confirmadas, back_populates="inscritos"
@@ -113,6 +116,15 @@ class FilaEsperaDB(Base):
 
 
 Base.metadata.create_all(bind=engine)
+
+# Migração leve: bancos criados antes desta versão não têm a coluna
+# 'usuario_id' em 'participantes' (create_all só cria tabelas novas, não
+# altera tabelas existentes). Adiciona a coluna se ainda não existir.
+with engine.connect() as _conn:
+    _colunas = [row[1] for row in _conn.exec_driver_sql("PRAGMA table_info(participantes)")]
+    if "usuario_id" not in _colunas:
+        _conn.exec_driver_sql("ALTER TABLE participantes ADD COLUMN usuario_id INTEGER REFERENCES usuarios(id)")
+        _conn.commit()
 
 
 def get_db():
@@ -216,7 +228,9 @@ class EventoCreate(BaseModel):
 
 
 class InscricaoCreate(BaseModel):
-    nome_participante: str
+    # O nome do participante não é mais informado livremente: ele é o
+    # username da conta logada (ver Depends(get_usuario_atual) na rota).
+    # Isso é o que impede alguém de se inscrever ou cancelar em nome de outra pessoa.
     email: Optional[str] = ""
 
 
@@ -291,6 +305,11 @@ def serializar_evento(e: EventoDB, db: Session, usuario_atual: Optional[UsuarioD
         "inscritos": [p.nome for p in e.inscritos],
         "criador": e.criador.username if e.criador else None,
         "pode_editar": bool(usuario_atual and e.criador_id == usuario_atual.id),
+        # Diz ao front se a CONTA LOGADA já está inscrita neste evento,
+        # para decidir se mostra o formulário de inscrição ou o botão de cancelar.
+        "inscrito_atual": bool(
+            usuario_atual and any(p.nome == usuario_atual.username for p in e.inscritos)
+        ),
     }
 
 
@@ -504,36 +523,49 @@ def remover_evento(
     return {"status": "Sucesso", "mensagem": "Evento removido."}
 
 
-# ----- Inscrições (continuam públicas: qualquer visitante pode se inscrever) -----
+# ----- Inscrições (agora exigem login: a inscrição é sempre da CONTA logada) -----
 @app.post("/eventos/{evento_id}/inscrever", tags=["Inscrições"])
 def inscrever_participante(
-    evento_id: int, payload: InscricaoCreate, db: Session = Depends(get_db)
+    evento_id: int,
+    payload: InscricaoCreate,
+    db: Session = Depends(get_db),
+    usuario: UsuarioDB = Depends(get_usuario_atual),
 ):
-    """Inscreve um participante ou o coloca na fila de espera caso lote."""
+    """Inscreve o usuário logado, ou o coloca na fila de espera caso lote.
+
+    O participante nunca é informado por nome livre: ele é sempre o usuário
+    autenticado (usuario.username), o que evita que alguém se inscreva — ou
+    pior, cancele a inscrição de outra pessoa.
+    """
     evento = db.query(EventoDB).filter(EventoDB.id == evento_id).first()
     if not evento:
         raise HTTPException(status_code=404, detail="Evento não encontrado.")
 
-    nome_participante = payload.nome_participante.strip()
-    if not nome_participante:
-        raise HTTPException(status_code=400, detail="Nome do participante é obrigatório.")
+    nome_participante = usuario.username
 
     participante = (
         db.query(ParticipanteDB).filter(ParticipanteDB.nome == nome_participante).first()
     )
     if not participante:
-        participante = ParticipanteDB(nome=nome_participante, email=payload.email or "")
+        participante = ParticipanteDB(
+            nome=nome_participante, email=payload.email or "", usuario_id=usuario.id
+        )
         db.add(participante)
         db.commit()
         db.refresh(participante)
+    elif participante.usuario_id is None:
+        # Participante antigo (de antes desta versão) com o mesmo nome de
+        # usuário: vincula à conta agora.
+        participante.usuario_id = usuario.id
+        db.commit()
 
     if participante in evento.inscritos:
-        return {"status": "Aviso", "mensagem": "Participante já inscrito."}
+        return {"status": "Aviso", "mensagem": "Você já está inscrito neste evento."}
 
     if len(evento.inscritos) < evento.lotacao_maxima:
         evento.inscritos.append(participante)
         db.commit()
-        return {"status": "Sucesso", "mensagem": f"{nome_participante} inscrito com sucesso!"}
+        return {"status": "Sucesso", "mensagem": f"{nome_participante}, sua inscrição foi confirmada!"}
     else:
         ultima_posicao = (
             db.query(FilaEsperaDB).filter(FilaEsperaDB.evento_id == evento_id).count()
@@ -547,49 +579,57 @@ def inscrever_participante(
         db.commit()
         return {
             "status": "Fila de Espera",
-            "mensagem": f"Evento lotado. {nome_participante} foi adicionado à fila de espera.",
+            "mensagem": f"Evento lotado. Você foi adicionado à fila de espera.",
         }
 
 
 @app.delete("/eventos/{evento_id}/cancelar", tags=["Inscrições"])
 def cancelar_inscricao(
-    evento_id: int, nome_participante: str, db: Session = Depends(get_db)
+    evento_id: int,
+    db: Session = Depends(get_db),
+    usuario: UsuarioDB = Depends(get_usuario_atual),
 ):
-    """Remove a inscrição e puxa automaticamente o próximo da fila de espera."""
+    """Remove a inscrição do usuário LOGADO e puxa automaticamente o próximo da fila.
+
+    Não recebe mais nome_participante por query string: a identidade vem do
+    token de sessão, então só quem se inscreveu (dono da sessão) pode cancelar
+    a própria inscrição — nunca a de outra pessoa.
+    """
     evento = db.query(EventoDB).filter(EventoDB.id == evento_id).first()
+    if not evento:
+        raise HTTPException(status_code=404, detail="Evento não encontrado.")
+
     participante = (
-        db.query(ParticipanteDB).filter(ParticipanteDB.nome == nome_participante).first()
+        db.query(ParticipanteDB).filter(ParticipanteDB.nome == usuario.username).first()
     )
-    if not evento or not participante:
-        raise HTTPException(status_code=404, detail="Evento ou participante inválido.")
 
-    if participante in evento.inscritos:
-        evento.inscritos.remove(participante)
-        db.commit()
+    if not participante or participante not in evento.inscritos:
+        raise HTTPException(status_code=400, detail="Você não está inscrito neste evento.")
 
-        proximo_fila = (
-            db.query(FilaEsperaDB)
-            .filter(FilaEsperaDB.evento_id == evento_id)
-            .order_by(FilaEsperaDB.posicao.asc())
+    evento.inscritos.remove(participante)
+    db.commit()
+
+    proximo_fila = (
+        db.query(FilaEsperaDB)
+        .filter(FilaEsperaDB.evento_id == evento_id)
+        .order_by(FilaEsperaDB.posicao.asc())
+        .first()
+    )
+    if proximo_fila:
+        novo_inscrito = (
+            db.query(ParticipanteDB)
+            .filter(ParticipanteDB.nome == proximo_fila.participante_nome)
             .first()
         )
-        if proximo_fila:
-            novo_inscrito = (
-                db.query(ParticipanteDB)
-                .filter(ParticipanteDB.nome == proximo_fila.participante_nome)
-                .first()
-            )
-            if novo_inscrito:
-                evento.inscritos.append(novo_inscrito)
-                db.delete(proximo_fila)
-                db.commit()
-            return {
-                "status": "Cancelado",
-                "mensagem": f"Inscrição cancelada. Próximo da fila ({proximo_fila.participante_nome}) foi inscrito!",
-            }
-        return {"status": "Cancelado", "mensagem": "Inscrição cancelada com sucesso."}
-
-    raise HTTPException(status_code=400, detail="Participante não está inscrito neste evento.")
+        if novo_inscrito:
+            evento.inscritos.append(novo_inscrito)
+            db.delete(proximo_fila)
+            db.commit()
+        return {
+            "status": "Cancelado",
+            "mensagem": f"Inscrição cancelada. Próximo da fila ({proximo_fila.participante_nome}) foi inscrito!",
+        }
+    return {"status": "Cancelado", "mensagem": "Sua inscrição foi cancelada com sucesso."}
 
 
 @app.get("/categorias", tags=["Eventos"])
